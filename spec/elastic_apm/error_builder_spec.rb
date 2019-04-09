@@ -5,7 +5,7 @@ module ElasticAPM
     subject { ErrorBuilder.new Agent.new(Config.new) }
 
     context 'with an exception' do
-      it 'builds an error from an exception', :mock_time do
+      it 'builds an error from an exception', :mock_time, unless: jruby_92? do
         error = subject.build_exception(actual_exception)
 
         expect(error.culprit).to eq '/'
@@ -15,35 +15,44 @@ module ElasticAPM
         expect(error.exception.handled).to be true
       end
 
-      it 'inherits context from current transaction', :with_fake_server do
+      it 'sets properties from current transaction', :intercept do
         env = Rack::MockRequest.env_for(
           '/somewhere/in/there?q=yes',
           method: 'POST'
         )
         env['HTTP_CONTENT_TYPE'] = 'application/json'
 
-        ElasticAPM.start
-        context = ElasticAPM.build_context(env)
+        begin
+          ElasticAPM.start
 
-        ElasticAPM.transaction 'T', 't', context: context do
-          ElasticAPM.report actual_exception
-        end.submit 'ok'
+          context =
+            ElasticAPM.build_context rack_env: env, for_type: :transaction
 
-        ElasticAPM.stop
+          transaction = ElasticAPM.with_transaction context: context do |txn|
+            ElasticAPM.set_tag(:my_tag, '123')
+            ElasticAPM.set_custom_context(all_the_other_things: 'blah blah')
+            ElasticAPM.set_user(Struct.new(:id).new(321))
+            ElasticAPM.report actual_exception
 
-        wait_for_requests_to_finish 2
-
-        error_payload = FakeServer.requests.find do |payload|
-          payload.key?('errors')
+            txn
+          end
+        ensure
+          ElasticAPM.stop
         end
 
-        request = error_payload.dig('errors', 0, 'context', 'request')
-        expect(request['method']).to eq 'POST'
+        error = @intercepted.errors.last
+        expect(error.transaction).to eq(sampled: true)
+        expect(error.transaction_id).to eq transaction.id
+        expect(error.trace_id).to eq transaction.trace_id
+        expect(error.context.tags).to match(my_tag: '123')
+        expect(error.context.custom)
+          .to match(all_the_other_things: 'blah blah')
+        # expect(error.trace_id).to eq transaction.trace_id
       end
     end
 
     context 'with a log' do
-      it 'builds an error from a message', :mock_time do
+      it 'builds an error from a message', :mock_time, unless: jruby_92? do
         error = subject.build_log 'Things went BOOM', backtrace: caller
 
         expect(error.culprit).to eq 'instance_exec'

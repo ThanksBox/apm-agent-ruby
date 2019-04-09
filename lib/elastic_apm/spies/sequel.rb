@@ -7,10 +7,16 @@ module ElasticAPM
   module Spies
     # @api private
     class SequelSpy
-      TYPE = 'db.sequel.sql'.freeze
+      TYPE = 'db.sequel.sql'
 
       def self.summarizer
         @summarizer ||= SqlSummarizer.new
+      end
+
+      def self.build_context(sql, opts)
+        Span::Context.new(
+          db: { statement: sql, type: 'sql', user: opts[:user] }
+        )
       end
 
       # rubocop:disable Metrics/MethodLength
@@ -27,13 +33,9 @@ module ElasticAPM
 
             summarizer = ElasticAPM::Spies::SequelSpy.summarizer
             name = summarizer.summarize sql
-            context = Span::Context.new(
-              statement: sql,
-              type: 'sql',
-              user: opts[:user]
-            )
+            context = ElasticAPM::Spies::SequelSpy.build_context(sql, opts)
 
-            ElasticAPM.span(name, TYPE, context: context, &block)
+            ElasticAPM.with_span(name, TYPE, context: context, &block)
           end
         end
       end

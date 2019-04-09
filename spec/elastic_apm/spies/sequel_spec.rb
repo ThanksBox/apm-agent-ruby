@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
+require 'spec_helper'
 require 'sequel'
 
 module ElasticAPM
-  RSpec.describe 'Spy: Sequel', :with_fake_server do
-    it 'spans calls' do
+  RSpec.describe 'Spy: Sequel' do
+    it 'spans calls', :intercept do
       db =
         if RUBY_PLATFORM == 'java'
           ::Sequel.connect('jdbc:sqlite::memory:')
@@ -21,17 +22,16 @@ module ElasticAPM
 
       ElasticAPM.start
 
-      transaction = ElasticAPM.transaction 'Sequel test' do
+      ElasticAPM.with_transaction 'Sequel test' do
         db[:users].count
-      end.submit 200
+      end
 
       ElasticAPM.stop
 
-      expect(transaction.spans.length).to be 1
+      span, = @intercepted.spans
 
-      span = transaction.spans.first
       expect(span.name).to eq 'SELECT FROM users'
-      expect(span.context.statement)
+      expect(span.context.db.statement)
         .to eq "SELECT count(*) AS 'count' FROM `users` LIMIT 1"
     end
   end

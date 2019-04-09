@@ -12,30 +12,16 @@ rescue LoadError
 end
 
 module ElasticAPM
-  RSpec.describe 'Sidekiq', :with_fake_server do
-    module SaveTransaction
-      def self.included(kls)
-        class << kls
-          attr_accessor :last_transaction
-        end
-      end
-
-      def set_current_transaction!
-        self.class.last_transaction = ElasticAPM.current_transaction
-      end
-    end
-
+  RSpec.describe 'Spy: Sidekiq', :intercept do
     class TestingWorker
       include Sidekiq::Worker
-      include SaveTransaction
 
       def perform
-        set_current_transaction!
+        'ok'
       end
     end
 
     class HardWorker < TestingWorker; end
-
     class ExplodingWorker < TestingWorker
       def perform
         super
@@ -45,12 +31,11 @@ module ElasticAPM
 
     if defined?(ActiveJob)
       class ActiveJobbyJob < ActiveJob::Base
-        include SaveTransaction
         self.queue_adapter = :sidekiq
         self.logger = nil # stay quiet
 
         def perform
-          set_current_transaction!
+          'ok'
         end
       end
     end
@@ -69,7 +54,7 @@ module ElasticAPM
 
       expect(ElasticAPM.agent).to_not be_nil
 
-      manager.stop(Time.now)
+      manager.stop(::Process.clock_gettime(::Process::CLOCK_MONOTONIC))
 
       expect(ElasticAPM.agent).to be_nil
       expect(manager).to be_stopped
@@ -84,7 +69,7 @@ module ElasticAPM
           HardWorker.perform_async
         end
 
-        transaction = HardWorker.last_transaction
+        transaction, = @intercepted.transactions
         expect(transaction).to_not be_nil
         expect(transaction.name).to eq 'ElasticAPM::HardWorker'
         expect(transaction.type).to eq 'Sidekiq'
@@ -97,17 +82,16 @@ module ElasticAPM
           end.to raise_error(ZeroDivisionError)
         end
 
-        transaction = ExplodingWorker.last_transaction
+        ElasticAPM.stop
+
+        transaction, = @intercepted.transactions
+        error, = @intercepted.errors
+
         expect(transaction).to_not be_nil
         expect(transaction.name).to eq 'ElasticAPM::ExplodingWorker'
         expect(transaction.type).to eq 'Sidekiq'
 
-        wait_for_requests_to_finish 1
-        expect(FakeServer.requests.length).to be 1
-
-        payload, = FakeServer.requests.last
-        type = payload.dig('errors', 0, 'exception', 'type')
-        expect(type).to eq 'ZeroDivisionError'
+        expect(error.exception.type).to eq 'ZeroDivisionError'
       end
 
       it 'knows the name of ActiveJob jobs', if: defined?(ActiveJob) do
@@ -115,7 +99,7 @@ module ElasticAPM
           ActiveJobbyJob.perform_later
         end
 
-        transaction = ActiveJobbyJob.last_transaction
+        transaction, = @intercepted.transactions
         expect(transaction).to_not be_nil
         expect(transaction.name).to eq 'ElasticAPM::ActiveJobbyJob'
       end

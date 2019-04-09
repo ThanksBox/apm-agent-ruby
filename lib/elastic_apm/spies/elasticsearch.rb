@@ -5,8 +5,8 @@ module ElasticAPM
   module Spies
     # @api private
     class ElasticsearchSpy
-      NAME_FORMAT = '%s %s'.freeze
-      TYPE = 'db.elasticsearch'.freeze
+      NAME_FORMAT = '%s %s'
+      TYPE = 'db.elasticsearch'
 
       # rubocop:disable Metrics/MethodLength
       def install
@@ -16,9 +16,9 @@ module ElasticAPM
           def perform_request(method, path, *args, &block)
             name = format(NAME_FORMAT, method, path)
             statement = args[0].is_a?(String) ? args[0] : args[0].to_json
-            context = Span::Context.new(statement: statement)
+            context = Span::Context.new(db: { statement: statement })
 
-            ElasticAPM.span name, TYPE, context: context do
+            ElasticAPM.with_span name, TYPE, context: context do
               perform_request_without_apm(method, path, *args, &block)
             end
           end

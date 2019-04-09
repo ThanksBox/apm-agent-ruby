@@ -1,40 +1,46 @@
+#
 # frozen_string_literal: true
 
 module ElasticAPM
   # @api private
   class Middleware
+    include Logging
+
     def initialize(app)
       @app = app
     end
 
-    # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
     def call(env)
       begin
         if running? && !path_ignored?(env)
-          transaction = build_transaction(env)
+          transaction = start_transaction(env)
         end
 
         resp = @app.call env
-
-        status, headers, body = resp
-        submit_transaction(transaction, status, headers, body) if transaction
       rescue InternalError
         raise # Don't report ElasticAPM errors
       rescue ::Exception => e
-        ElasticAPM.report(e, handled: false)
-        transaction.submit('HTTP 5xx', status: 500) if transaction
+        context = ElasticAPM.build_context(rack_env: env, for_type: :error)
+        ElasticAPM.report(e, context: context, handled: false)
         raise
       ensure
-        transaction.release if transaction
+        if resp && transaction
+          status, headers, _body = resp
+          transaction.add_response(status, headers: headers.dup)
+        end
+
+        ElasticAPM.end_transaction http_result(status)
       end
 
       resp
     end
-    # rubocop:enable Metrics/CyclomaticComplexity, Metrics/MethodLength
+    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
-    def submit_transaction(transaction, status, headers, _body)
-      result = "HTTP #{status.to_s[0]}xx"
-      transaction.submit(result, status: status, headers: headers)
+    private
+
+    def http_result(status)
+      status && "HTTP #{status.to_s[0]}xx"
     end
 
     def path_ignored?(env)
@@ -43,9 +49,20 @@ module ElasticAPM
       end
     end
 
-    def build_transaction(env)
-      ElasticAPM.transaction 'Rack', 'request',
-        context: ElasticAPM.build_context(env)
+    def start_transaction(env)
+      context = ElasticAPM.build_context(rack_env: env, for_type: :transaction)
+
+      ElasticAPM.start_transaction 'Rack', 'request',
+        context: context,
+        trace_context: trace_context(env)
+    end
+
+    def trace_context(env)
+      return unless (header = env['HTTP_ELASTIC_APM_TRACEPARENT'])
+      TraceContext.parse(header)
+    rescue TraceContext::InvalidTraceparentHeader
+      warn "Couldn't parse invalid traceparent header: #{header.inspect}"
+      nil
     end
 
     def running?
@@ -53,7 +70,7 @@ module ElasticAPM
     end
 
     def config
-      ElasticAPM.agent.config
+      @config ||= ElasticAPM.agent.config
     end
   end
 end

@@ -3,17 +3,17 @@
 require 'fakeredis/rspec'
 
 module ElasticAPM
-  RSpec.describe 'Spy: Redis', :with_fake_server do
-    it 'spans queries' do
+  RSpec.describe 'Spy: Redis' do
+    it 'spans queries', :intercept do
       redis = ::Redis.new
       ElasticAPM.start
 
-      transaction = ElasticAPM.transaction 'T' do
+      ElasticAPM.with_transaction 'T' do
         redis.lrange('some:where', 0, -1)
-      end.submit 200
+      end
 
-      expect(transaction.spans.length).to be 1
-      span = transaction.spans.last
+      span, = @intercepted.spans
+
       expect(span.name).to eq 'LRANGE'
 
       ElasticAPM.stop

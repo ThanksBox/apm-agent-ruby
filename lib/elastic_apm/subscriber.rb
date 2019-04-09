@@ -6,7 +6,7 @@ require 'elastic_apm/normalizers'
 module ElasticAPM
   # @api private
   class Subscriber
-    include Log
+    include Logging
 
     def initialize(agent)
       @agent = agent
@@ -40,7 +40,7 @@ module ElasticAPM
           nil
         else
           name, type, context = normalized
-          @agent.span(name, type, context: context)
+          @agent.start_span(name, type, context: context)
         end
 
       transaction.notifications << Notification.new(id, span)
@@ -54,7 +54,7 @@ module ElasticAPM
         next unless notification.id == id
 
         if (span = notification.span)
-          span.done
+          @agent.end_span if span == @agent.current_span
         end
         return
       end

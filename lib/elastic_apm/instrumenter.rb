@@ -1,44 +1,64 @@
 # frozen_string_literal: true
 
+require 'elastic_apm/trace_context'
 require 'elastic_apm/span'
 require 'elastic_apm/transaction'
+require 'elastic_apm/span_helpers'
 
 module ElasticAPM
+  # rubocop:disable Metrics/ClassLength
   # @api private
   class Instrumenter
-    include Log
+    TRANSACTION_KEY = :__elastic_instrumenter_transaction_key
+    SPAN_KEY = :__elastic_instrumenter_spans_key
 
-    KEY = :__elastic_transaction_key
+    include Logging
 
     # @api private
-    class TransactionInfo
+    class Current
       def initialize
-        self.current = nil
+        self.transaction = nil
+        self.spans = []
       end
 
-      def current
-        Thread.current[KEY]
+      def transaction
+        Thread.current[TRANSACTION_KEY]
       end
 
-      def current=(transaction)
-        Thread.current[KEY] = transaction
+      def transaction=(transaction)
+        Thread.current[TRANSACTION_KEY] = transaction
+      end
+
+      def spans
+        Thread.current[SPAN_KEY] ||= []
+      end
+
+      def spans=(spans)
+        Thread.current[SPAN_KEY] ||= []
+        Thread.current[SPAN_KEY] = spans
       end
     end
 
-    def initialize(agent)
-      @agent = agent
-      @config = agent.config
+    def initialize(config, stacktrace_builder:, &enqueue)
+      @config = config
+      @stacktrace_builder = stacktrace_builder
+      @enqueue = enqueue
 
-      @transaction_info = TransactionInfo.new
+      @current = Current.new
     end
 
-    attr_reader :agent, :config, :pending_transactions
+    attr_reader :config, :stacktrace_builder, :enqueue
 
     def start
+      debug 'Starting instrumenter'
     end
 
     def stop
-      current_transaction.release if current_transaction
+      debug 'Stopping instrumenter'
+
+      self.current_transaction = nil
+      current_spans.pop until current_spans.empty?
+
       @subscriber.unregister! if @subscriber
     end
 
@@ -47,70 +67,126 @@ module ElasticAPM
       @subscriber.register!
     end
 
+    # transactions
+
     def current_transaction
-      @transaction_info.current
+      @current.transaction
     end
 
     def current_transaction=(transaction)
-      @transaction_info.current = transaction
+      @current.transaction = transaction
     end
 
     # rubocop:disable Metrics/MethodLength
-    # rubocop:disable Metrics/CyclomaticComplexity
-    def transaction(name = nil, type = nil, context: nil, sampled: nil)
-      unless config.instrument
-        yield if block_given?
-        return
-      end
+    def start_transaction(
+      name = nil,
+      type = nil,
+      context: nil,
+      trace_context: nil
+    )
+      return nil unless config.instrument?
 
       if (transaction = current_transaction)
-        yield transaction if block_given?
-        return transaction
+        raise ExistingTransactionError,
+          "Transactions may not be nested.\nAlready inside #{transaction}"
       end
 
-      sampled = random_sample? if sampled.nil?
+      sampled = trace_context ? trace_context.recorded? : random_sample?
 
       transaction =
-        Transaction.new self, name, type, context: context, sampled: sampled
+        Transaction.new(
+          name,
+          type,
+          context: context,
+          trace_context: trace_context,
+          sampled: sampled
+        )
+
+      transaction.start
 
       self.current_transaction = transaction
-      return transaction unless block_given?
+    end
+    # rubocop:enable Metrics/MethodLength
 
-      begin
-        yield transaction
-      ensure
-        self.current_transaction = nil
-        transaction.done
-      end
+    def end_transaction(result = nil)
+      return nil unless (transaction = current_transaction)
+
+      self.current_transaction = nil
+
+      transaction.done result
+
+      enqueue.call transaction
 
       transaction
     end
-    # rubocop:enable Metrics/CyclomaticComplexity
-    # rubocop:enable Metrics/MethodLength
 
-    def random_sample?
-      rand <= config.transaction_sample_rate
+    # spans
+
+    def current_spans
+      @current.spans
     end
 
-    # rubocop:disable Metrics/MethodLength
-    def span(name, type = nil, backtrace: nil, context: nil, &block)
-      unless current_transaction
-        return yield if block_given?
+    def current_span
+      current_spans.last
+    end
+
+    # rubocop:disable Metrics/MethodLength, Metrics/CyclomaticComplexity
+    # rubocop:disable Metrics/AbcSize, Metrics/PerceivedComplexity
+    def start_span(
+      name,
+      type = nil,
+      backtrace: nil,
+      context: nil,
+      trace_context: nil
+    )
+      return unless (transaction = current_transaction)
+      return unless transaction.sampled?
+
+      transaction.inc_started_spans!
+
+      if transaction.max_spans_reached?(config)
+        transaction.inc_dropped_spans!
         return
       end
 
-      current_transaction.span(
-        name,
-        type,
-        backtrace: backtrace,
+      parent = current_span || transaction
+
+      span = Span.new(
+        name: name,
+        transaction_id: transaction.id,
+        trace_context: trace_context || parent.trace_context.child,
+        type: type,
         context: context,
-        &block
+        stacktrace_builder: stacktrace_builder
       )
+
+      if backtrace && config.span_frames_min_duration?
+        span.original_backtrace = backtrace
+      end
+
+      current_spans.push span
+
+      span.start
     end
-    # rubocop:enable Metrics/MethodLength
+    # rubocop:enable Metrics/AbcSize, Metrics/PerceivedComplexity
+    # rubocop:enable Metrics/MethodLength, Metrics/CyclomaticComplexity
+
+    def end_span
+      return unless (span = current_spans.pop)
+
+      span.done
+
+      enqueue.call span
+
+      span
+    end
+
+    # metadata
 
     def set_tag(key, value)
       return unless current_transaction
+
+      key = key.to_s.gsub(/[\."\*]/, '_').to_sym
       current_transaction.context.tags[key] = value.to_s
     end
 
@@ -121,14 +197,7 @@ module ElasticAPM
 
     def set_user(user)
       return unless current_transaction
-      current_transaction.context.user = Context::User.new(config, user)
-    end
-
-    def submit_transaction(transaction)
-      agent.enqueue_transaction transaction
-
-      return unless config.debug_transactions
-      debug('Submitted transaction:') { Util.inspect_transaction transaction }
+      current_transaction.context.user = Context::User.infer(config, user)
     end
 
     def inspect
@@ -136,5 +205,12 @@ module ElasticAPM
         "current_transaction=#{current_transaction.inspect}" \
         '>'
     end
+
+    private
+
+    def random_sample?
+      rand <= config.transaction_sample_rate
+    end
   end
+  # rubocop:enable Metrics/ClassLength
 end

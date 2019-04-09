@@ -3,45 +3,68 @@
 module ElasticAPM
   # @api private
   class ContextBuilder
-    def initialize(_agent); end
+    MAX_BODY_LENGTH = 2048
+    SKIPPED = '[SKIPPED]'
 
-    def build(rack_env)
-      context = Context.new
-      apply_to_request(context, rack_env)
-      context
+    def initialize(config)
+      @config = config
+    end
+
+    attr_reader :config
+
+    def build(rack_env:, for_type:)
+      Context.new.tap do |context|
+        apply_to_request(context, rack_env: rack_env, for_type: for_type)
+      end
     end
 
     private
 
-    # rubocop:disable Metrics/AbcSize
-    def apply_to_request(context, rack_env)
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+    def apply_to_request(context, rack_env:, for_type:)
       req = rails_req?(rack_env) ? rack_env : Rack::Request.new(rack_env)
 
       context.request = Context::Request.new unless context.request
       request = context.request
 
-      request.socket = Context::Request::Socket.new(req).to_h
+      request.socket = Context::Request::Socket.new(req)
       request.http_version = build_http_version rack_env
       request.method = req.request_method
-      request.url = Context::Request::Url.new(req).to_h
-      request.headers, request.env = get_headers_and_env(rack_env)
-      request.body = get_body(req)
+      request.url = Context::Request::Url.new(req)
+
+      request.body = should_capture_body?(for_type) ? get_body(req) : SKIPPED
+
+      headers, env = get_headers_and_env(rack_env)
+      request.headers = headers if config.capture_headers?
+      request.env = env if config.capture_env?
 
       context
     end
-    # rubocop:enable Metrics/AbcSize
+    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
+
+    def should_capture_body?(for_type)
+      option = config.capture_body
+
+      return true if option == 'all'
+      return true if option == 'transactions' && for_type == :transaction
+      return true if option == 'errors' && for_type == :error
+
+      false
+    end
 
     def get_body(req)
-      return req.POST if req.form_data?
-
-      body = req.body.read
-      req.body.rewind
-      body
+      case req.media_type
+      when 'application/x-www-form-urlencoded', 'multipart/form-data'
+        req.POST.dup
+      else
+        body = req.body.read
+        req.body.rewind
+        body.byteslice(0, MAX_BODY_LENGTH).force_encoding('utf-8')
+      end
     end
 
     def rails_req?(env)
-      defined?(ActionDispatch::Request) &&
-        env.is_a?(ActionDispatch::Request)
+      defined?(ActionDispatch::Request) && env.is_a?(ActionDispatch::Request)
     end
 
     def get_headers_and_env(rack_env)

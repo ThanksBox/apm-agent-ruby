@@ -1,8 +1,14 @@
+ifdef::env-github[]
+NOTE: For the best reading experience,
+please view this documentation at
+https://www.elastic.co/guide/en/apm/agent/ruby/current/introduction.html[elastic.co]
+endif::[]
+
 [[api]]
 == Public API
 
-Although most usage is covered automatically, Elastic APM also has a public API that
-allows custom usage.
+Although most usage is covered automatically, Elastic APM also has a public
+API that allows custom usage.
 
 [float]
 [[agent-life-cycle]]
@@ -24,7 +30,8 @@ ElasticAPM.start(server_url: 'http://localhost:8200')
   * `config`: An optional hash or `ElasticAPM::Config` instance with configuration
   options.  See <<configuration,Configuration>>.
 
-If you are using <<getting-started-rails,Ruby on Rails>> this is done automatically for you.
+If you are using <<getting-started-rails,Ruby on Rails>> this is done
+automatically for you.
 If not see <<getting-started-rack,Getting started with Rack>>.
 
 [float]
@@ -56,58 +63,77 @@ Returns the currently running agent or nil.
 Returns the current `ElasticAPM::Transaction` or nil.
 
 [float]
-[[api-agent-transaction]]
-==== `ElasticAPM.transaction`
+[[api-agent-start_transaction]]
+==== `ElasticAPM.start_transaction`
 
-Start a _transaction_ eg. a web request or background job.
-
-If called without a block you are expected to end the transaction yourself.
-If given a block, the code inside will be wrapped in a transaction.
-
-You need to submit it yourself with `transaction.submit(status)`.
+Start a _transaction_ eg. an incoming web request or a background job.
 
 [source,ruby]
 ----
 # call with block
-transaction = ElasticAPM.transaction('Do things') do
-  do_work # ...
-end # .done is called when block ends
-
-transaction.submit(200)
-
-# without block
-transaction = ElasticAPM.transaction('Do things')
-do_work
-transaction.submit(200) # .submit(result) will also .done(result)
+ElasticAPM.start_transaction('Name')
+do_work # ...
+ElasticAPM.end_transaction('result')
 ----
 
 Arguments:
 
   * `name`: A name for your transaction. Transactions are grouped by name. **Required**.
   * `type`: A `type` for your transaction eg. `db.postgresql.sql`.
-  * `context:`: An optional <<api-context,Context>> used to enrich the transaction with
-  information about the current request.
-  * `&block`: An optional block to wrap with the transaction. The block is passed the
-  transaction as an optional argument.
+  * `context:`: An optional <<api-context,Context>> used to enrich the
+  transaction with information about the current request.
+  * `trace_context:`: An optional `TraceContext` object for Distributed Tracing.
 
 Returns the transaction.
 
 [float]
-[[api-agent-span]]
-==== `ElasticAPM.span`
+[[api-agent-end_transaction]]
+==== `ElasticAPM.end_transaction`
 
-Most transactions have nested spans signifying work of a specific sort eg. database
-queries or external web requests.
+Ends the currently running transaction.
 
-If given a block, wrap the code inside in a span.
-If not you are expected to close the span yourself with `span.done(result)`.
+Arguments:
+
+  * `result`: A `String` result of the transaction, eg. `'success'`.
+
+[float]
+[[api-agent-with_transaction]]
+==== `ElasticAPM.with_transaction`
+
+Wrap a block in a Transaction, starting and ending around the block
 
 [source,ruby]
 ----
-ElasticAPM.transaction 'Do things' do
-  ElasticAPM.span 'Do one of the things' do
-    Database.query # ...
-  end
+ElasticAPM.with_transaction 'Do things' do |transaction|
+  do_work # ...
+
+  transaction.result = 'success'
+end
+----
+
+Arguments: 
+
+  * `name`: A name for your transaction. Transactions are grouped by name. **Required**.
+  * `type`: A `type` for your transaction eg. `db.postgresql.sql`.
+  * `context:`: An optional <<api-context,Context>> used to enrich the
+  transaction with information about the current request.
+  * `trace_context:`: An optional `TraceContext` object for Distributed Tracing.
+  * `&block`: A block to wrap. Optionally yields the transaction.
+
+Returns the return value of the given block.
+
+[float]
+[[api-agent-start_span]]
+==== `ElasticAPM.start_span`
+
+Start a new span.
+
+[source,ruby]
+----
+ElasticAPM.with_transaction 'Do things' do
+  ElasticAPM.start_span 'Do one of the things'
+  Database.query # ...
+  ElasticAPM.end_span
 end
 ----
 
@@ -120,7 +146,30 @@ Arguments:
   * `&block`: An optional block to wrap with the span.
   The block is passed the span as an optional argument.
 
-Return the span or the return value of the given block.
+Returns the created span.
+
+[float]
+[[api-agent-end_span]]
+==== `ElasticAPM.end_span`
+
+Ends the currently running span.
+
+[float]
+[[api-agent-with_span]]
+==== `ElasticAPM.with_span`
+
+Wraps a block in a Span.
+
+Arguments:
+
+  * `name`: A name for your span. **Required**.
+  * `type`: The type of work eg. `db.postgresql.query`.
+  * `context`: An instance of `Span::Context`.
+  * `include_stacktrace`: Whether or not to collect a Stacktrace.
+  * `&block`: An optional block to wrap with the span.
+  The block is passed the span as an optional argument.
+
+Returns the return value of the given block.
 
 [float]
 [[api-agent-build-context]]
@@ -133,6 +182,7 @@ A context provides information about the current request, response, user and mor
 Arguments:
 
   * `rack_env`: An instance of Rack::Env
+  * `for_type`: Symbol representing type of event, eg. `:transaction` or `error`
 
 Returns the built context.
 
@@ -191,8 +241,8 @@ Returns `[ElasticAPM::Error]`.
 ==== `ElasticAPM.set_tag`
 
 Add a tag to the current transaction.
-Tags are basic key-value pairs that are indexed in your Elasticsearch database and
-therefore searchable.
+Tags are basic key-value pairs that are indexed in your Elasticsearch database
+and therefore searchable.
 
 [source,ruby]
 ----
@@ -203,7 +253,7 @@ end
 
 Arguments:
 
-  * `key`: A string key.
+  * `key`: A string key. Note that `.`, `*` or `"` will be converted to `_`.
   * `value`: A string value.
 
 Returns the set `value`.
@@ -287,51 +337,48 @@ end
 
 - `name`: String
 - `type`: String
-
-[float]
-[[api-transaction-release]]
-==== `#release`
-
-Makes sure the transaction is no longer `ElasticAPM.current_transaction`.
-
-[float]
-[[api-transaction-done]]
-==== `#done(result)`
-
-*Args:*
-
-- `result`: String result of transaction, eg. `success`. Default: `nil`.
-
-Ends the transaction, settings its `duration` to µs since it began and sets its result.
-
-Returns `self`.
-
-[float]
-[[api-transaction-done_]]
-==== `#done?`
-
-Returns whether the transaction is done.
-
-[float]
-[[api-transaction-submit]]
-==== `#submit(result, status:, headers:)`
-
-*Args:*
-
-- `result`: String result of transaction, eg. `success`. Default: `nil`.
-- `status`: HTTP status code (for request transactions). Default: `nil`.
-- `headers`: HTTP headers (for request transactions). Default: `{}`.
-
-Ends transaction with done, adds HTTP request information, releases it and submits
-it to the queue of transactions waiting to be sent to APM Server.
-
-Returns `self`.
+- `result`: String
+- `trace_id`: String (readonly)
 
 [float]
 [[api-transaction-sampled_]]
 ==== #sampled?
 
 Whether the transaction is _sampled_ eg. it includes stacktraces for its spans.
+
+[float]
+[[api-transaction-ensure_parent_id]]
+==== #ensure_parent_id
+
+If the transaction does not have a parent-ID yet, calling this method generates
+a new ID, sets it as the parent-ID of this transaction, and returns it as a
+`String`.
+
+This enables the correlation of the spans the JavaScript Real User Monitoring
+(RUM) agent creates for the initial page load with the transaction of the
+backend service.
+
+If your service generates the HTML page dynamically, initializing the
+JavaScript RUM agent with the value of this method allows analyzing the time
+spent in the browser vs in the backend services.
+
+To enable the JavaScript RUM agent, initilialize the RUM agent with the Ruby
+agent'a current transaction:
+
+[source,html]
+----
+<script src="elastic-apm-js-base/dist/bundles/elastic-apm-js-base.umd.min.js"></script>
+<script>
+  var elasticApm = initApm({
+    serviceName: '',
+    serverUrl: 'http://localhost:8200',
+    pageLoadTraceId: "<%= ElasticAPM.current_transaction&.trace_id %>",
+    pageLoadSpanId: "<%= ElasticAPM.current_transaction&.ensure_parent_id %>",
+    pageLoadSampled: <%= ElasticAPM.current_transaction&.sampled? %>
+  })
+</script>
+----
+See the {apm-rum-ref}[JavaScript RUM agent documentation] for more information.
 
 [float]
 [[api-span]]
@@ -346,6 +393,3 @@ Whether the transaction is _sampled_ eg. it includes stacktraces for its spans.
 [float]
 [[api-context]]
 === Context
-
-A `Context` provides more information to transactions. Build one with `ElasticAPM.build_context`.
-

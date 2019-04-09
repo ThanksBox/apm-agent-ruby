@@ -2,6 +2,18 @@
 
 module ElasticAPM
   RSpec.describe Agent do
+    let(:config) { Config.new }
+    subject { Agent.new config }
+
+    describe '#initialize' do
+      its(:transport) { should be_a Transport::Base }
+      its(:instrumenter) { should be_a Instrumenter }
+      its(:stacktrace_builder) { should be_a StacktraceBuilder }
+      its(:context_builder) { should be_a ContextBuilder }
+      its(:error_builder) { should be_a ErrorBuilder }
+      its(:metrics) { should be_a Metrics::Collector }
+    end
+
     context 'life cycle' do
       describe '.start' do
         it 'starts an instance and only one' do
@@ -12,14 +24,13 @@ module ElasticAPM
           Agent.stop # clean up
         end
 
-        it 'prints a disabled warning when env not included' do
-          expect($stdout).to receive(:puts)
-          Agent.start Config.new(environment: 'other')
-          Agent.stop
+        context 'when active: false' do
+          let(:config) { Config.new(active: false) }
 
-          expect($stdout).to_not receive(:puts)
-          Agent.start Config.new(disable_environment_warning: true)
-          Agent.stop
+          it "doesn't start" do
+            Agent.start(config)
+            expect(Agent.instance).to be nil
+          end
         end
       end
 
@@ -34,92 +45,81 @@ module ElasticAPM
     end
 
     context 'instrumenting' do
-      subject { Agent.new Config.new }
-      it { should delegate :current_transaction, to: subject.instrumenter }
-      it do
-        should delegate :transaction,
-          to: subject.instrumenter,
-          args: ['name', 'type', { context: nil, sampled: true }]
-      end
-      it do
-        should delegate :span,
-          to: subject.instrumenter,
-          args: ['name', 'type', { backtrace: nil, context: nil }]
-      end
-      it do
-        should delegate :set_tag,
-          to: subject.instrumenter, args: [:key, 'value']
-      end
-      it do
-        should delegate :set_custom_context,
-          to: subject.instrumenter, args: [{}]
-      end
-      it do
-        should delegate :set_user,
-          to: subject.instrumenter, args: ['user']
+      let(:instrumenter) { subject.instrumenter }
+
+      it 'should delegate methods to instrumenter' do
+        {
+          current_transaction: nil,
+          current_span: nil,
+          start_transaction: [nil, nil, { context: nil, trace_context: nil }],
+          end_transaction: [nil],
+          start_span: [
+            nil,
+            nil,
+            { backtrace: nil, context: nil, trace_context: nil }
+          ],
+          end_span: nil,
+          set_tag: [nil, nil],
+          set_custom_context: [nil],
+          set_user: [nil]
+        }.each do |name, args|
+          expect(subject).to delegate(name, to: instrumenter, args: args)
+        end
       end
     end
 
-    context 'reporting', :with_fake_server do
-      class AgentTestError < StandardError; end
-
-      subject { ElasticAPM.start }
-      after { ElasticAPM.stop }
-
+    context 'reporting', :intercept do
       describe '#report' do
         it 'queues a request' do
-          exception = AgentTestError.new('Yikes!')
-
-          subject.report(exception)
-          wait_for_requests_to_finish 1
-
-          expect(FakeServer.requests.length).to be 1
+          expect { subject.report(actual_exception) }
+            .to change(@intercepted.errors, :length).by 1
         end
 
-        it 'ignores filtered exception types' do
-          config =
+        context 'with filtered exception types' do
+          class AgentTestError < StandardError; end
+
+          let(:config) do
             Config.new(filter_exception_types: %w[ElasticAPM::AgentTestError])
-          agent = Agent.new config
-          exception = AgentTestError.new("It's ok!")
+          end
 
-          agent.report(exception)
+          it 'ignores exception' do
+            exception = AgentTestError.new("It's ok!")
 
-          expect(FakeServer.requests.length).to be 0
+            expect { subject.report(exception) }
+              .to change(@intercepted.errors, :length).by 0
+          end
         end
       end
 
-      describe '#report_message' do
+      describe '#report_message', :intercept do
         it 'queues a request' do
-          subject.report_message('Everything went 💥')
-          wait_for_requests_to_finish 1
-
-          expect(FakeServer.requests.length).to be 1
+          expect { subject.report_message('Everything went 💥') }
+            .to change(@intercepted.errors, :length).by 1
         end
       end
     end
 
-    describe '#enqueue_transaction', :with_fake_server do
-      subject { Agent.new Config.new(flush_interval: nil) }
-
-      it 'enqueues a collection of transactions' do
-        transaction = subject.transaction
-
-        subject.enqueue_transaction(transaction)
-        wait_for_requests_to_finish 1
-
-        expect(FakeServer.requests.length).to be 1
+    context 'metrics', :intercept do
+      it 'starts' do
+        subject.start
+        expect(subject.metrics).to be_running
       end
 
-      after { subject.stop }
+      context 'when interval is zero' do
+        let(:config) { Config.new metrics_interval: 0 }
+
+        it "doesn't start" do
+          subject.start
+          expect(subject.metrics).to_not be_running
+        end
+      end
     end
 
     describe '#add_filter' do
-      subject { Agent.new Config.new }
-
       it 'may add a filter' do
         expect do
           subject.add_filter :key, -> {}
-        end.to change(subject.http.filters, :length).by 1
+        end.to change(subject.transport.filters, :length).by 1
       end
     end
   end

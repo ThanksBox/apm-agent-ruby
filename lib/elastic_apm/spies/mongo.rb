@@ -14,7 +14,7 @@ module ElasticAPM
 
       # @api private
       class Subscriber
-        TYPE = 'db.mongodb.query'.freeze
+        TYPE = 'db.mongodb.query'
 
         def initialize
           @events = {}
@@ -37,21 +37,32 @@ module ElasticAPM
         def push_event(event)
           return unless ElasticAPM.current_transaction
 
-          ctx = Span::Context.new(
-            instance: event.database_name,
-            statement: nil,
-            type: 'mongodb'.freeze,
-            user: nil
-          )
-          span = ElasticAPM.span(event.command_name.to_s, TYPE, context: ctx)
+          span =
+            ElasticAPM.start_span(
+              event.command_name.to_s,
+              TYPE,
+              context: build_context(event)
+            )
+
           @events[event.operation_id] = span
         end
 
         def pop_event(event)
-          return unless ElasticAPM.current_transaction
-
+          return unless (curr = ElasticAPM.current_span)
           span = @events.delete(event.operation_id)
-          span && span.done
+
+          curr == span && ElasticAPM.end_span
+        end
+
+        def build_context(event)
+          Span::Context.new(
+            db: {
+              instance: event.database_name,
+              statement: nil,
+              type: 'mongodb',
+              user: nil
+            }
+          )
         end
       end
     end

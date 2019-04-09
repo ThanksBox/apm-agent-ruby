@@ -20,11 +20,10 @@ class App
     @config = ElasticAPM::Config.new(
       {
         environment: 'bench',
-        enabled_environments: ['bench'],
         disable_send: true
       }.merge(config)
     )
-    @serializer = ElasticAPM::Serializers::Transactions.new(@config)
+    # @serializer = ElasticAPM::Serializers::Transactions.new(@config)
     @mock_env = Rack::MockRequest.env_for('/')
   end
 

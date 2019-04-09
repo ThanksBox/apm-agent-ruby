@@ -1,7 +1,7 @@
 # elastic-apm
 ## Elastic APM agent for ♦️Ruby
 
-[![Jenkins](https://img.shields.io/jenkins/s/https/apm-ci.elastic.co/job/elastic+apm-agent-ruby+master.svg)](https://apm-ci.elastic.co/job/elastic+apm-agent-ruby+master/) [![Gem](https://img.shields.io/gem/v/elastic-apm.svg)](https://rubygems.org/gems/elastic-apm)
+[![Jenkins](https://apm-ci.elastic.co/buildStatus/icon?job=apm-agent-ruby/apm-agent-ruby-mbp/master)](https://apm-ci.elastic.co/job/apm-agent-ruby/apm-agent-ruby-mbp/master) [![Gem](https://img.shields.io/gem/v/elastic-apm.svg)](https://rubygems.org/gems/elastic-apm) [![codecov](https://codecov.io/gh/elastic/apm-agent-ruby/branch/master/graph/badge.svg)](https://codecov.io/gh/elastic/apm-agent-ruby)
 
 The official Rubygem for [Elastic][] [APM][].
 
@@ -11,21 +11,21 @@ The official Rubygem for [Elastic][] [APM][].
 
 ## Documentation
 
-[Full documentation at Elasti.co](https://www.elastic.co/guide/en/apm/agent/ruby/index.html).
+[Full documentation at Elasti.co](https://www.elastic.co/guide/en/apm/agent/ruby/2.x/index.html).
 
 <ul>
-<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/1.x/introduction.html">Introduction</a></li>
-<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/1.x/getting-started-rails.html">Getting started with Rails</a></li>
-<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/1.x/getting-started-rack.html">Getting started with Rack</a></li>
-<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/1.x/configuration.html">Configuration</a></li>
+  <li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/2.x/introduction.html">Introduction</a></li>
+<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/2.x/getting-started-rails.html">Getting started with Rails</a></li>
+<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/2.x/getting-started-rack.html">Getting started with Rack</a></li>
+<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/2.x/configuration.html">Configuration</a></li>
 <li>
-<a href="https://www.elastic.co/guide/en/apm/agent/ruby/1.x/advanced.html">Advanced Topics</a>
+<a href="https://www.elastic.co/guide/en/apm/agent/ruby/2.x/advanced.html">Advanced Topics</a>
 <ul>
-<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/1.x/custom-instrumentation.html">Custom instrumentation</a></li>
-<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/1.x/spies.html">Spies — instrumented libraries</a></li>
+<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/2.x/custom-instrumentation.html">Custom instrumentation</a></li>
 </ul>
 </li>
-<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/1.x/api.html">Public API</a></li>
+<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/2.x/supported-technologies.html">Supported Technologies</a></li>
+<li><a href="https://www.elastic.co/guide/en/apm/agent/ruby/2.x/api.html">Public API</a></li>
 </ul>
 
 ---

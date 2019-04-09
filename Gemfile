@@ -6,20 +6,25 @@ git_source(:github) { |repo_name| "https://github.com/#{repo_name}" }
 
 gemspec
 
-gem 'elasticsearch'
-gem 'fakeredis', require: nil
-gem 'json-schema'
-gem 'mongo'
 gem 'pry'
 gem 'rack-test'
-gem 'redis', require: nil
 gem 'rspec'
-gem 'rubocop'
-gem 'sequel'
-gem 'sidekiq'
+gem 'rspec-its'
+gem 'rubocop', require: nil
 gem 'timecop'
 gem 'webmock'
-gem 'yard'
+
+gem 'elasticsearch', require: nil
+gem 'fakeredis', require: nil
+gem 'json-schema', require: nil
+gem 'mongo', require: nil
+gem 'opentracing', require: nil
+gem 'rake', require: nil
+gem 'sequel', require: nil
+gem 'sidekiq', require: nil
+gem 'simplecov', require: false, group: :test
+gem 'simplecov-cobertura', require: false, group: :test
+gem 'yard', require: nil
 gem 'yarjuf'
 
 if RUBY_PLATFORM == 'java'
@@ -40,7 +45,11 @@ else
   gem framework
 end
 
+unless version =~ /^(master|6)/
+  gem 'delayed_job', require: nil
+end
+
 group :bench do
-  gem 'ruby-prof', platforms: %i[ruby]
-  gem 'stackprof', platforms: %i[ruby]
+  gem 'ruby-prof', require: nil, platforms: %i[ruby]
+  gem 'stackprof', require: nil, platforms: %i[ruby]
 end

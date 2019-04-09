@@ -8,7 +8,7 @@ if defined?(Rails)
   require 'elastic_apm/railtie'
 
   RSpec.describe 'Rails integration',
-    :allow_leaking_subscriptions, :with_fake_server do
+    :allow_leaking_subscriptions, :mock_intake do
 
     include Rack::Test::Methods
 
@@ -29,12 +29,12 @@ if defined?(Rails)
 
         config.action_mailer.perform_deliveries = false
 
-        config.elastic_apm.enabled_environments += %w[test]
+        config.elastic_apm.api_request_time = '100ms'
+        config.elastic_apm.capture_body = 'all'
+        config.elastic_apm.pool_size = Concurrent.processor_count
         config.elastic_apm.service_name = 'RailsTestApp'
-        config.elastic_apm.flush_interval = nil
-        config.elastic_apm.debug_transactions = true
-        config.elastic_apm.http_compression = false
         config.elastic_apm.log_path = 'spec/elastic_apm.log'
+        config.elastic_apm.log_level = Logger::DEBUG
         config.elastic_apm.ignore_url_patterns = '/ping'
       end
 
@@ -46,6 +46,14 @@ if defined?(Rails)
         end
 
         def index
+          render_ok
+        end
+
+        http_basic_authenticate_with(
+          name: 'dhh', password: 'secret123', only: [:create]
+        )
+
+        def create
           render_ok
         end
 
@@ -105,6 +113,7 @@ if defined?(Rails)
         get '/tags_and_context', to: 'application#context'
         get '/send_notification', to: 'application#send_notification'
         get '/ping', to: 'application#ping'
+        post '/', to: 'application#create'
         root to: 'application#index'
       end
     end
@@ -118,15 +127,15 @@ if defined?(Rails)
     end
 
     it 'knows Rails' do
-      # test config from Rails.app.config
-      expect(ElasticAPM.agent.config.debug_transactions).to be true
+      responses = Array.new(10).map { get '/' }
 
-      response = get '/'
-      wait_for_requests_to_finish 1
+      wait_for transactions: 10
 
-      expect(response.body).to eq 'Yes!'
+      expect(responses.last.body).to eq 'Yes!'
+      expect(@mock_intake.metadatas.length >= 1).to be true
+      expect(@mock_intake.transactions.length).to be 10
 
-      service = FakeServer.requests.first['service']
+      service = @mock_intake.metadatas.first['service']
       expect(service['name']).to eq 'RailsTestApp'
       expect(service['framework']['name']).to eq 'Ruby on Rails'
       expect(service['framework']['version'])
@@ -141,30 +150,31 @@ if defined?(Rails)
     describe 'transactions' do
       it 'spans action and posts it' do
         get '/'
-        wait_for_requests_to_finish 1
 
-        expect(FakeServer.requests.length).to be 1
-        name = FakeServer.requests.first['transactions'][0]['name']
+        wait_for transactions: 1
+
+        name = @mock_intake.transactions.first['name']
         expect(name).to eq 'ApplicationController#index'
       end
 
       it 'can set tags and custom context' do
         get '/tags_and_context'
-        wait_for_requests_to_finish 1
 
-        payload, = FakeServer.requests
-        context = payload['transactions'][0]['context']
+        wait_for transactions: 1
+
+        context = @mock_intake.transactions.first['context']
         expect(context['tags']).to eq('things' => '1')
         expect(context['custom']).to eq('nested' => { 'banana' => 'explosion' })
       end
 
       it 'includes user information' do
         get '/'
-        wait_for_requests_to_finish 1
 
-        context = FakeServer.requests.first['transactions'][0]['context']
+        wait_for transactions: 1
+
+        context = @mock_intake.transactions.first['context']
         user = context['user']
-        expect(user['id']).to eq 1
+        expect(user['id']).to eq '1'
         expect(user['email']).to eq 'person@example.com'
       end
 
@@ -172,77 +182,139 @@ if defined?(Rails)
         get '/ping'
         get '/'
 
-        wait_for_requests_to_finish 1
-        expect(FakeServer.requests.length).to be 1
-        name = FakeServer.requests.first['transactions'][0]['name']
+        wait_for transactions: 1
+
+        name = @mock_intake.transactions.first['name']
         expect(name).to eq 'ApplicationController#index'
+      end
+
+      it "filters sensitive looking data, but doesn't touch original" do
+        resp = post '/', access_token: 'abc123'
+
+        wait_for transactions: 1
+
+        expect(resp.body).to eq("HTTP Basic: Access denied.\n")
+        expect(resp.original_headers['WWW-Authenticate']).to_not be nil
+        expect(resp.original_headers['WWW-Authenticate']).to_not eq '[FILTERED]'
+
+        transaction, = @mock_intake.transactions
+
+        body = transaction.dig('context', 'request', 'body')
+        expect(body['access_token']).to eq '[FILTERED]'
+
+        response_headers = transaction.dig('context', 'response', 'headers')
+        expect(response_headers['WWW-Authenticate']).to eq '[FILTERED]'
       end
 
       it 'validates json schema', type: :json_schema do
         get '/'
-        wait_for_requests_to_finish 1
 
-        payload, = FakeServer.requests
-        expect(payload).to match_json_schema(:transactions)
+        wait_for transactions: 1
+
+        metadata = @mock_intake.metadatas.first
+        expect(metadata).to match_json_schema(:metadatas)
+
+        transaction = @mock_intake.transactions.first
+        expect(transaction).to match_json_schema(:transactions)
+
+        span = @mock_intake.spans.first
+        expect(span).to match_json_schema(:spans)
       end
     end
 
     describe 'errors' do
-      it 'adds an exception handler and handles exceptions '\
-        'AND posts transaction' do
+      it 'handles exceptions and posts transaction' do
         response = get '/error'
-        wait_for_requests_to_finish 2
+
+        wait_for transactions: 1, errors: 1
 
         expect(response.status).to be 500
-        expect(FakeServer.requests.length).to be 2
 
-        error_request =
-          FakeServer.requests.find { |r| r.key?('errors') }
-        error = error_request['errors'][0]
-
-        expect(error['transaction']['id']).to_not be_nil
+        error = @mock_intake.errors.first
+        expect(error['transaction_id']).to_not be_nil
+        expect(error['transaction']['sampled']).to be true
+        expect(error['context']).to_not be nil
 
         exception = error['exception']
         expect(exception['type']).to eq 'ApplicationController::FancyError'
-        expect(exception['handled']).to eq true
+        expect(exception['handled']).to eq false
       end
 
       it 'validates json schema', type: :json_schema do
         get '/error'
-        wait_for_requests_to_finish 2
 
-        payload =
-          FakeServer.requests.find { |r| r.key?('errors') }
+        wait_for transactions: 1, errors: 1
+
+        payload = @mock_intake.errors.first
         expect(payload).to match_json_schema(:errors)
       end
 
-      it 'sends messages that validate', type: :json_schema do
+      it 'sends messages that validate' do
         get '/report_message'
-        wait_for_requests_to_finish 2
-        sleep 1 if RSpec::Support::Ruby.jruby? # so sorry
 
-        payload =
-          FakeServer.requests.find { |r| r.key?('errors') }
-        expect(payload.dig('errors', 0, 'log')).to_not be_nil
-        expect(payload).to match_json_schema(:errors)
+        wait_for transactions: 1, errors: 1
+
+        error, = @mock_intake.errors
+        expect(error['log']).to be_a Hash
       end
     end
 
     describe 'mailers' do
       it 'spans mails' do
         get '/send_notification'
-        wait_for_requests_to_finish 1
 
-        payload, = FakeServer.requests
-        transaction_name = payload.dig('transactions', 0, 'name')
-        expect(transaction_name).to eq 'ApplicationController#send_notification'
-        span_name = payload.dig('transactions', 0, 'spans', 1, 'name')
-        expect(span_name).to eq 'NotificationsMailer#ping'
+        wait_for transactions: 1, spans: 3
+
+        transaction, = @mock_intake.transactions
+        expect(transaction['name'])
+          .to eq 'ApplicationController#send_notification'
+        span = @mock_intake.spans.find do |payload|
+          payload['name'] == 'NotificationsMailer#ping'
+        end
+        expect(span).to_not be_nil
       end
     end
 
     after :all do
       ElasticAPM.stop
+    end
+  end
+
+  RSpec.describe 'Rails console' do
+    def app
+      @app ||= Rails.application
+    end
+
+    before :all do
+      class RailsConsoleTestApp < Rails::Application
+        config.secret_key_base = '__secret_key_base'
+        config.logger = Logger.new(nil)
+        config.eager_load = false
+
+        # silence warning
+        config.elastic_apm.alert_logger = Logger.new(nil)
+      end
+
+      class ApplicationController < ActionController::Base
+      end
+
+      module Rails
+        class Console; end
+      end
+
+      RailsConsoleTestApp.initialize!
+    end
+
+    after :all do
+      %i[RailsConsoleTestApp ApplicationController].each do |const|
+        Object.send(:remove_const, const)
+      end
+      Rails.send(:remove_const, :Console)
+      Rails.application = nil
+    end
+
+    it "doesn't start when console" do
+      expect(ElasticAPM.agent).to be nil
     end
   end
 else

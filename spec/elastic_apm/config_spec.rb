@@ -17,6 +17,11 @@ module ElasticAPM
       expect(config.server_url).to eq 'somewhere-config.com'
     end
 
+    it 'loads from erb-styled config file' do
+      config = Config.new(config_file: 'spec/fixtures/elastic_apm_erb.yml')
+      expect(config.server_url).to eq 'somewhere-config.com'
+    end
+
     it 'takes options from ENV' do
       ENV['ELASTIC_APM_SERVER_URL'] = 'by-env!'
       config = Config.new
@@ -38,11 +43,7 @@ module ElasticAPM
         ['ELASTIC_APM_VERIFY_SERVER_CERT', 'true', true],
         ['ELASTIC_APM_VERIFY_SERVER_CERT', '0', false],
         ['ELASTIC_APM_VERIFY_SERVER_CERT', 'false', false],
-        [
-          'ELASTIC_APM_ENABLED_ENVIRONMENTS',
-          'test,production',
-          %w[test production]
-        ],
+        ['ELASTIC_APM_DISABLED_SPIES', 'json,http', %w[json http]],
         ['ELASTIC_APM_CUSTOM_KEY_FILTERS', 'Auth,Other', [/Auth/, /Other/]],
         [
           'ELASTIC_APM_DEFAULT_TAGS',
@@ -50,11 +51,42 @@ module ElasticAPM
           { 'test' => 'something something', 'other' => 'ok' }
         ]
       ].each do |(key, val, expected)|
-        val_before = ENV[key]
-        ENV[key] = val
-        setting = key.gsub('ELASTIC_APM_', '').downcase
-        expect(Config.new.send(setting.to_sym)).to eq expected
-        val_before ? ENV[key] = val_before : ENV.delete(key)
+        with_env(key => val) do
+          setting = key.gsub('ELASTIC_APM_', '').downcase
+          expect(Config.new.send(setting.to_sym)).to eq expected
+        end
+      end
+    end
+
+    context 'duration units' do
+      subject do
+        Config.new(
+          api_request_time: '1m',
+          span_frames_min_duration: '10ms'
+        )
+      end
+
+      its(:api_request_time) { should eq 60 }
+      its(:span_frames_min_duration) { should eq 0.010 }
+
+      context 'when no unit' do
+        it 'uses default unit' do
+          expect(Config.new(api_request_time: '4').api_request_time).to eq 4
+          expect(
+            Config.new(span_frames_min_duration: '5').span_frames_min_duration
+          ).to eq 0.005
+        end
+      end
+    end
+
+    describe 'byte units' do
+      context 'with a unit' do
+        subject { Config.new(api_request_size: '500kb') }
+        its(:api_request_size) { should eq 500 * 1024 }
+      end
+      context 'without a unit' do
+        subject { Config.new(api_request_size: '1') }
+        its(:api_request_size) { should eq 1024 }
       end
     end
 
@@ -114,6 +146,47 @@ module ElasticAPM
 
         expect(logger).to receive(:info).with('MockLog')
         config.logger.info 'MockLog'
+      end
+    end
+
+    describe 'deprecations' do
+      it 'warns about removed options' do
+        expect_any_instance_of(PrefixedLogger)
+          .to receive(:warn).with(/has been removed/)
+
+        subject.flush_interval = 123
+      end
+
+      it 'warns about boolean value for capture_body' do
+        expect_any_instance_of(PrefixedLogger)
+          .to receive(:warn).with(/Boolean value.*deprecated./).twice
+
+        subject.capture_body = true
+        expect(subject.capture_body).to be 'all'
+
+        subject.capture_body = false
+        expect(subject.capture_body).to be 'off'
+
+        expect_any_instance_of(PrefixedLogger)
+          .to receive(:warn).with(/Unknown value/)
+
+        subject.capture_body = :oh_no
+        expect(subject.capture_body).to be 'off'
+      end
+    end
+
+    describe 'unknown options' do
+      before { expect_any_instance_of(PrefixedLogger).to receive(:warn) }
+
+      context 'from args' do
+        it 'logs to the alert logger' do
+          Config.new(unknown_key: true)
+        end
+      end
+      context 'from config_file' do
+        it 'logs to the alert logger' do
+          Config.new(config_file: 'spec/fixtures/unknown_option.yml')
+        end
       end
     end
   end

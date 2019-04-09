@@ -7,9 +7,17 @@ module ElasticAPM
       expect(subject.custom).to eq({})
     end
 
-    describe '#to_h' do
-      it 'converts to a hash' do
-        expect(subject.to_h).to be_a Hash
+    describe '#empty?' do
+      it 'is when new' do
+        expect(Context.new).to be_empty
+      end
+
+      it "isn't when it has data" do
+        expect(Context.new(tags: { a: 1 })).to_not be_empty
+        expect(Context.new(custom: { a: 1 })).to_not be_empty
+        expect(Context.new(user: { a: 1 })).to_not be_empty
+        expect(Context.new.tap { |c| c.request = 1 }).to_not be_empty
+        expect(Context.new.tap { |c| c.response = 1 }).to_not be_empty
       end
     end
   end
